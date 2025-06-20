@@ -37,6 +37,24 @@ class ZitiIntercept : NSObject, ZitiUnretained {
         super.init()
         
         clt.data = self.toVoidPtr()
+        
+        if let tls_context = clt.tls {
+            tls_context.pointee.set_cert_verify?(tls_context, { _, _ in
+                return 0
+            }, nil)
+            tlsuv_http_set_ssl(&clt, tls_context)
+            log.trace("Trying to set ssl verification off")
+        } else if let tls_context = default_tls_context(nil, 0) { // apakah code ini sudah benar, untuk mentrust ssl server?
+            tls_context.pointee.set_cert_verify?(tls_context, { one, two in
+                let log = ZitiLog(ZitiIntercept.self)
+                log.trace("Trying to trust server ssl")
+                return 0
+            }, nil)
+            tlsuv_http_set_ssl(&clt, tls_context)
+            log.trace("Trying to create tls_context")
+        } else {
+            log.trace("tlsContextnya nil")
+        }
     }
     
     static private let on_http_close:tlsuv_http_close_cb = { h in
@@ -63,8 +81,14 @@ class ZitiIntercept : NSObject, ZitiUnretained {
         req?.pointee.resp.body_cb = on_body
         
         if req != nil {
+           let data = zup.request.allHTTPHeaderFields ?? [:]
+           let headers = data.filter { $0.key != "httpBody" }
+           let httpBody = data["httpBody"]
+           
+           log.info("-- zup.request.allHTTPHeaderFields: \(headers.debugDescription)")
+           log.info("-- zup.request.httpBody: \(httpBody?.debugDescription ?? "nil")")
             // Add request headers
-            zup.request.allHTTPHeaderFields?.forEach { h in
+            headers.forEach { h in
                 tlsuv_http_req_header(req,
                                    h.key.cString(using: .utf8),
                                    h.value.cString(using: .utf8))
@@ -78,7 +102,7 @@ class ZitiIntercept : NSObject, ZitiUnretained {
             }
             
             // if no User-Agent add it
-            if zup.request.allHTTPHeaderFields?["User-Agent"] == nil {
+            if headers["User-Agent"] == nil {
                 var zv = "unknown-@unknown"
                 if let nfv = ziti_get_version()?.pointee {
                     zv = "\(String(cString: nfv.version))-@\(String(cString: nfv.revision))"
@@ -89,20 +113,28 @@ class ZitiIntercept : NSObject, ZitiUnretained {
             }
             
             // if no Accept, add it
-            if zup.request.allHTTPHeaderFields?["Accept"] == nil {
+            if headers["Accept"] == nil {
                 tlsuv_http_req_header(req,
                                    "Accept".cString(using: .utf8),
                                    "*/*".cString(using: .utf8))
             }
-            
             // Add body
-            if let body = zup.request.httpBody {
+            if let httpBody, let body = httpBody.data(using: .utf8) {
+                let ptr = UnsafeMutablePointer<Int8>.allocate(capacity: body.count)
+                let bytes:[Int8] = body.map{ Int8(bitPattern: $0) }
+                ptr.initialize(from: bytes, count: body.count)
+                tlsuv_http_req_data(req, ptr, body.count, nil)
+                ptr.deallocate()
+            } else if let body = zup.request.httpBody {
+                log.info("-- zup.request.httpBody: \(String(data: body, encoding: .utf8)?.debugDescription ?? "-")")
+                
                 let ptr = UnsafeMutablePointer<Int8>.allocate(capacity: body.count)
                 let bytes:[Int8] = body.map{ Int8(bitPattern: $0) }
                 ptr.initialize(from: bytes, count: body.count)
                 tlsuv_http_req_data(req, ptr, body.count, nil)
                 ptr.deallocate()
             } else if let stream = zup.request.httpBodyStream {
+                log.info("-- zup.request.httpBody :: .httpBodyStream")
                 if let clv = zup.request.allHTTPHeaderFields?["Content-Length"], let contentLen = Int(clv) {
                     var body = Data()
                     let ptr = UnsafeMutablePointer<UInt8>.allocate(capacity: contentLen)
@@ -112,18 +144,29 @@ class ZitiIntercept : NSObject, ZitiUnretained {
                         body.append(ptr, count: n)
                     }
                     stream.close()
-                    
-                    _ = ptr.withMemoryRebound(to: Int8.self, capacity: body.count) {
-                        tlsuv_http_req_data(req, $0, body.count, nil)
-                    }
+                  
+                    log.info("-- zup.request.httpBodyStream: \(String(data: body, encoding: .utf8)?.debugDescription ?? "-")")
+
+                    let _ptr = UnsafeMutablePointer<Int8>.allocate(capacity: body.count)
+                    let bytes:[Int8] = body.map{ Int8(bitPattern: $0) }
+                    _ptr.initialize(from: bytes, count: body.count)
+                    tlsuv_http_req_data(req, _ptr, body.count, nil)
+
+                    _ptr.deallocate()
                     ptr.deallocate()
                 } else {
+                    log.info("-- zup.request.httpBody :: encoding not yet supported :(")
                     // TODO: Transfer-Encoding:chunked
-                    let encoding = zup.request.allHTTPHeaderFields?["Transfer-Encoding"] ?? ""
+                    let encoding = headers["Transfer-Encoding"] ?? ""
                     log.error("Content-Length required, \(encoding) encoding not yet supported :(")
                 }
+            } else {
+              log.info("-- zup.request.httpBody :: else")
             }
+          
+          log.info("-- Final Req: \(req)")
         }
+
         return req
     }
 }

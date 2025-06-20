@@ -294,17 +294,33 @@ import CZitiPrivate
             log.wtf("unable to determine request URL")
             return
         }
-                
-        var hdrMap:[String:String] = [:]
-        var curr = resp.pointee.headers.lh_first
-        while curr != nil {
-            hdrMap[String(cString: curr!.pointee.name)] = String(cString: curr!.pointee.value)
-            curr = curr!.pointee._next.le_next
+        
+        var hdrMap: [String: String] = [:]
+        var setCookieValues: [String] = []
+        
+        var currentHeader = resp.pointee.headers.lh_first
+        
+        while let header = currentHeader {
+            let headerName = String(cString: header.pointee.name)
+            let headerValue = String(cString: header.pointee.value)
+            
+            if headerName.lowercased() == "set-cookie" {
+                setCookieValues.append(headerValue)
+            } else {
+                hdrMap[headerName] = headerValue
+            }
+            
+            currentHeader = header.pointee._next.le_next
         }
-                        
+        
+        if !setCookieValues.isEmpty {
+            hdrMap["Set-Cookie"] = setCookieValues.joined(separator: ", ")
+        }
+        
         // On TLS handshake error getting a negative response code (-53), notifyDidReceive
         // nothing, so we end up waiting for timeout. So notifyDidFailWithError instead...
         let code = Int(resp.pointee.code)
+        
         guard code > 0 else {
             let str = String(cString: ziti_errorstr(Int32(code)))
             log.error("\(code) \(str)")
