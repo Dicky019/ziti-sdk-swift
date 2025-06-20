@@ -305,6 +305,12 @@ import CZitiPrivate
         // On TLS handshake error getting a negative response code (-53), notifyDidReceive
         // nothing, so we end up waiting for timeout. So notifyDidFailWithError instead...
         let code = Int(resp.pointee.code)
+        
+        log.trace("-- reqUrl: \(reqUrl)")
+        log.trace("-- resp: \(resp)")
+        log.trace("-- resp.pointee.code: \(code)")
+        log.trace("-- resp header: \(hdrMap)")
+
         guard code > 0 else {
             let str = String(cString: ziti_errorstr(Int32(code)))
             log.error("\(code) \(str)")

@@ -37,6 +37,24 @@ class ZitiIntercept : NSObject, ZitiUnretained {
         super.init()
         
         clt.data = self.toVoidPtr()
+        
+        if let tls_context = clt.tls {
+            tls_context.pointee.set_cert_verify?(tls_context, { _, _ in
+                return 0
+            }, nil)
+            tlsuv_http_set_ssl(&clt, tls_context)
+            log.trace("Trying to set ssl verification off")
+        } else if let tls_context = default_tls_context(nil, 0) { // apakah code ini sudah benar, untuk mentrust ssl server?
+            tls_context.pointee.set_cert_verify?(tls_context, { one, two in
+                let log = ZitiLog(ZitiIntercept.self)
+                log.trace("Trying to trust server ssl \(one) \(two)")
+                return 0
+            }, nil)
+            tlsuv_http_set_ssl(&clt, tls_context)
+            log.trace("Trying to create tls_context")
+        } else {
+            log.trace("tlsContextnya nil")
+        }
     }
     
     static private let on_http_close:tlsuv_http_close_cb = { h in
@@ -63,6 +81,7 @@ class ZitiIntercept : NSObject, ZitiUnretained {
         req?.pointee.resp.body_cb = on_body
         
         if req != nil {
+            log.trace("-- zup.request.allHTTPHeaderFields: \(zup.request.allHTTPHeaderFields ?? [])")
             // Add request headers
             zup.request.allHTTPHeaderFields?.forEach { h in
                 tlsuv_http_req_header(req,
@@ -75,6 +94,7 @@ class ZitiIntercept : NSObject, ZitiUnretained {
                 hdrs.forEach { hdr in
                     tlsuv_http_req_header(req, hdr.key, hdr.value)
                 }
+                log.trace("-- Header Req: \(hdrs)")
             }
             
             // if no User-Agent add it
@@ -97,6 +117,7 @@ class ZitiIntercept : NSObject, ZitiUnretained {
             
             // Add body
             if let body = zup.request.httpBody {
+                log.trace("-- zup.request.httpBody: \(body)")
                 let ptr = UnsafeMutablePointer<Int8>.allocate(capacity: body.count)
                 let bytes:[Int8] = body.map{ Int8(bitPattern: $0) }
                 ptr.initialize(from: bytes, count: body.count)
@@ -124,6 +145,9 @@ class ZitiIntercept : NSObject, ZitiUnretained {
                 }
             }
         }
+        
+        log.trace("-- Final Req: \(req!)")
+
         return req
     }
 }
